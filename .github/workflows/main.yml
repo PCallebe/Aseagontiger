@@ -1,28 +1,19 @@
 
-name: Dragon Tiger - Gerar APK
+name: Gerar APK Dragon Tiger
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'DragonTiger.zip'
-      - '.github/workflows/DragonTiger.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Compilar APK Android
     runs-on: ubuntu-22.04
     timeout-minutes: 40
 
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-
     steps:
-      - name: Baixar arquivos do repositorio
+      - name: Baixar repositorio
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -31,33 +22,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Localizar e configurar Android SDK
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar componentes Android
         shell: bash
         run: |
-          set -euo pipefail
-
-          echo "Android SDK: $ANDROID_HOME"
+          set -eu
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
             -type f -name sdkmanager | sort -V | tail -n 1)"
 
           if [ -z "$SDKMANAGER" ]; then
             echo "ERRO: sdkmanager nao encontrado."
-            find "$ANDROID_HOME" -maxdepth 4 -type f \
-              -name sdkmanager || true
             exit 1
           fi
 
-          echo "Usando: $SDKMANAGER"
+          "$SDKMANAGER" --version
 
-          set +o pipefail
+          set +e
           yes | "$SDKMANAGER" \
             --sdk_root="$ANDROID_HOME" --licenses
-          LICENSE_STATUS=${PIPESTATUS[1]}
-          set -o pipefail
+          LICENSE_EXIT=$?
+          set -e
 
-          if [ "$LICENSE_STATUS" -ne 0 ]; then
-            echo "ERRO ao aceitar licencas do Android SDK."
+          if [ "$LICENSE_EXIT" -ne 0 ]; then
+            echo "Falha ao aceitar licencas do SDK."
             exit 1
           fi
 
@@ -66,76 +56,47 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Verificar e extrair projeto
+      - name: Extrair projeto
         shell: bash
         run: |
-          set -euo pipefail
+          set -eu
 
-          if [ ! -f DragonTiger.zip ]; then
-            echo "ERRO: coloque DragonTiger.zip na raiz do repositorio."
+          test -f InfinityDragonTiger_v1.zip || {
+            echo "ERRO: InfinityDragonTiger_v1.zip ausente na raiz."
             exit 1
-          fi
+          }
 
           mkdir -p projeto
-          unzip -q DragonTiger.zip -d projeto
+          unzip -q InfinityDragonTiger_v1.zip -d projeto
 
-          GRADLE_FILE="$(find projeto -type f \
-            \( -name settings.gradle -o -name settings.gradle.kts \) \
-            -print -quit)"
-
-          if [ -z "$GRADLE_FILE" ]; then
-            echo "ERRO: settings.gradle nao encontrado no ZIP."
-            find projeto -maxdepth 4 -type f | head -200
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$GRADLE_FILE")"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Projeto localizado em: $PROJECT_DIR"
-
-          if [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "ERRO: modulo app nao encontrado."
-            find "$PROJECT_DIR" -maxdepth 3 -type f
-            exit 1
-          fi
+          test -f projeto/settings.gradle.kts
+          test -f projeto/app/build.gradle.kts
+          test -f projeto/app/src/main/AndroidManifest.xml
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
       - name: Compilar APK
         shell: bash
         run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
+          set -eu
+          gradle -p projeto --no-daemon \
+            :app:assembleDebug --stacktrace
 
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew --no-daemon assembleDebug
-          else
-            gradle --no-daemon assembleDebug
-          fi
-
-      - name: Verificar e preparar APK
+      - name: Validar APK
         shell: bash
         run: |
-          set -euo pipefail
+          set -eu
+          APK="projeto/app/build/outputs/apk/debug/app-debug.apk"
 
-          APK="$(find "$PROJECT_DIR" -type f \
-            -path '*/build/outputs/apk/*/*.apk' \
-            -name '*debug*.apk' -print -quit)"
-
-          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
-            echo "ERRO: APK nao foi gerado."
-            find "$PROJECT_DIR" -type f \
-              -path '*/build/outputs/*' || true
-            exit 1
-          fi
-
+          test -s "$APK"
           mkdir -p saida
           cp "$APK" saida/DragonTiger-debug.apk
           sha256sum saida/DragonTiger-debug.apk
 
-      - name: Publicar APK
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
           name: DragonTiger-debug-APK
