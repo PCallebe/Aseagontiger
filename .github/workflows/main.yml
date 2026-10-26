@@ -1,0 +1,144 @@
+
+name: Dragon Tiger - Gerar APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'DragonTiger.zip'
+      - '.github/workflows/DragonTiger.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilar APK Android
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Baixar arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Localizar e configurar Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Android SDK: $ANDROID_HOME"
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager | sort -V | tail -n 1)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERRO: sdkmanager nao encontrado."
+            find "$ANDROID_HOME" -maxdepth 4 -type f \
+              -name sdkmanager || true
+            exit 1
+          fi
+
+          echo "Usando: $SDKMANAGER"
+
+          set +o pipefail
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" --licenses
+          LICENSE_STATUS=${PIPESTATUS[1]}
+          set -o pipefail
+
+          if [ "$LICENSE_STATUS" -ne 0 ]; then
+            echo "ERRO ao aceitar licencas do Android SDK."
+            exit 1
+          fi
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Verificar e extrair projeto
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f DragonTiger.zip ]; then
+            echo "ERRO: coloque DragonTiger.zip na raiz do repositorio."
+            exit 1
+          fi
+
+          mkdir -p projeto
+          unzip -q DragonTiger.zip -d projeto
+
+          GRADLE_FILE="$(find projeto -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -print -quit)"
+
+          if [ -z "$GRADLE_FILE" ]; then
+            echo "ERRO: settings.gradle nao encontrado no ZIP."
+            find projeto -maxdepth 4 -type f | head -200
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Projeto localizado em: $PROJECT_DIR"
+
+          if [ ! -d "$PROJECT_DIR/app" ]; then
+            echo "ERRO: modulo app nao encontrado."
+            find "$PROJECT_DIR" -maxdepth 3 -type f
+            exit 1
+          fi
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compilar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon assembleDebug
+          else
+            gradle --no-daemon assembleDebug
+          fi
+
+      - name: Verificar e preparar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="$(find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/*/*.apk' \
+            -name '*debug*.apk' -print -quit)"
+
+          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
+            echo "ERRO: APK nao foi gerado."
+            find "$PROJECT_DIR" -type f \
+              -path '*/build/outputs/*' || true
+            exit 1
+          fi
+
+          mkdir -p saida
+          cp "$APK" saida/DragonTiger-debug.apk
+          sha256sum saida/DragonTiger-debug.apk
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DragonTiger-debug-APK
+          path: saida/DragonTiger-debug.apk
+          if-no-files-found: error
+          retention-days: 14
