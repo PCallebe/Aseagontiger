@@ -4,9 +4,7 @@ run-name: DragonTigerApp APK - ${{ github.ref_name }}
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
     paths:
       - 'app/**'
       - '*.gradle'
@@ -18,24 +16,21 @@ on:
 permissions:
   contents: read
 
-env:
-  ANDROID_HOME: /usr/local/lib/android/sdk
-  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-  ANDROID_COMPILE_SDK: '35'
-  ANDROID_BUILD_TOOLS: '35.0.0'
-  GRADLE_VERSION: '8.9'
-
 concurrency:
   group: dragontiger-apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build APK (JDK 17 / Gradle 8.9 / Android 35)
+    name: Build APK (JDK 17 / Gradle 8.9 / SDK 35)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
-      - name: Checkout do repositório
+      - name: Checkout do projeto
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -44,48 +39,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Instalar Gradle 8.9
+      - name: Preparar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      # Não usar android-actions/setup-android aqui: essa action falhou ao
-      # executar sdkmanager no runner. O SDK pré-instalado do Ubuntu é usado
-      # diretamente, com sdk_root explícito em todas as chamadas.
-      - name: Preparar Android SDK sem setup-android
+      # O runner ubuntu-24.04 já fornece Android SDK. Não reinstalar
+      # cmdline-tools nem executar sdkmanager: isso era o ponto de falha.
+      - name: Validar SDK Android pré-instalado
         shell: bash
         run: |
           set -Eeuo pipefail
-          SDK_ROOT="$ANDROID_HOME"
-          test -d "$SDK_ROOT"
-          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1)"
-          if [[ -z "$SDKMANAGER" ]]; then
-            echo "sdkmanager não encontrado em $SDK_ROOT/cmdline-tools" >&2
-            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print >&2 || true
-            exit 1
-          fi
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          echo "SDK_ROOT=$SDK_ROOT"
-          "$SDKMANAGER" --version
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
-            "platform-tools" \
-            "platforms;android-${ANDROID_COMPILE_SDK}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME" || { echo "Android SDK ausente em $ANDROID_HOME"; exit 1; }
+          test -d "$ANDROID_HOME/platform-tools" || { echo "platform-tools ausente"; exit 1; }
+          test -d "$ANDROID_HOME/platforms/android-35" || { echo "Android platform 35 ausente no runner"; ls -la "$ANDROID_HOME/platforms" || true; exit 1; }
+          test -d "$ANDROID_HOME/build-tools/35.0.0" || { echo "Build Tools 35.0.0 ausente no runner"; ls -la "$ANDROID_HOME/build-tools" || true; exit 1; }
+          echo "SDK Android 35 validado. Nenhuma instalação via sdkmanager necessária."
 
-      - name: Diagnóstico do ambiente Android
+      - name: Diagnóstico do ambiente
         shell: bash
         run: |
           set -Eeuo pipefail
           java -version
           gradle --version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          test -x "$SDKMANAGER"
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --list_installed
-          test -d "$ANDROID_HOME/platforms/android-${ANDROID_COMPILE_SDK}"
-          test -d "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
+          echo "SDK platforms:"; ls -1 "$ANDROID_HOME/platforms"
+          echo "SDK build-tools:"; ls -1 "$ANDROID_HOME/build-tools"
 
       - name: Validar estrutura e identidade do projeto
         shell: bash
@@ -106,11 +85,10 @@ jobs:
           grep -q 'applicationId = "com.infinity.dragontiger"' app/build.gradle.kts
           grep -q 'versionName = "0.5.3"' app/build.gradle.kts
 
-      - name: Resolver dependências e compilar Kotlin
+      - name: Compilar Kotlin
         shell: bash
-        run: |
-          set -Eeuo pipefail
-          gradle --no-daemon --stacktrace --warning-mode all :app:compileDebugKotlin
+        run: gradle --no-daemon --stacktrace --warning-mode all :app:compileDebugKotlin
+        timeout-minutes: 20
 
       - name: Gerar APK Debug
         shell: bash
@@ -122,11 +100,12 @@ jobs:
           mkdir -p build/verification
           sha256sum "$APK" | tee build/verification/apk-sha256.txt
           stat --printf='APK bytes: %s\n' "$APK" | tee build/verification/apk-size.txt
+        timeout-minutes: 20
 
       - name: Publicar APK e comprovantes
         uses: actions/upload-artifact@v4
         with:
-          name: DragonTigerApp-APK-v0.5.3-SDKFIX
+          name: DragonTigerApp-APK-v0.5.3
           path: |
             app/build/outputs/apk/debug/app-debug.apk
             build/verification/apk-sha256.txt
