@@ -19,6 +19,8 @@ permissions:
   contents: read
 
 env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
   ANDROID_COMPILE_SDK: '35'
   ANDROID_BUILD_TOOLS: '35.0.0'
   GRADLE_VERSION: '8.9'
@@ -42,34 +44,48 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Instala uma distribuição Gradle real. Não depende de gradlew nem de ZIP externo.
       - name: Instalar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Instalar SDK Platform e Build Tools
+      # Não usar android-actions/setup-android aqui: essa action falhou ao
+      # executar sdkmanager no runner. O SDK pré-instalado do Ubuntu é usado
+      # diretamente, com sdk_root explícito em todas as chamadas.
+      - name: Preparar Android SDK sem setup-android
         shell: bash
         run: |
           set -Eeuo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install \
+          SDK_ROOT="$ANDROID_HOME"
+          test -d "$SDK_ROOT"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -path '*/bin/sdkmanager' 2>/dev/null | sort -V | tail -n 1)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "sdkmanager não encontrado em $SDK_ROOT/cmdline-tools" >&2
+            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager -print >&2 || true
+            exit 1
+          fi
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "SDK_ROOT=$SDK_ROOT"
+          "$SDKMANAGER" --version
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
             "platform-tools" \
             "platforms;android-${ANDROID_COMPILE_SDK}" \
             "build-tools;${ANDROID_BUILD_TOOLS}"
 
-      - name: Diagnóstico do ambiente
+      - name: Diagnóstico do ambiente Android
         shell: bash
         run: |
           set -Eeuo pipefail
           java -version
           gradle --version
-          sdkmanager --list_installed
-          echo "ANDROID_HOME=${ANDROID_HOME:-não definido}"
-          test -n "${ANDROID_HOME:-}"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --list_installed
+          test -d "$ANDROID_HOME/platforms/android-${ANDROID_COMPILE_SDK}"
+          test -d "$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS}"
 
       - name: Validar estrutura e identidade do projeto
         shell: bash
@@ -110,7 +126,7 @@ jobs:
       - name: Publicar APK e comprovantes
         uses: actions/upload-artifact@v4
         with:
-          name: DragonTigerApp-APK-v0.5.3
+          name: DragonTigerApp-APK-v0.5.3-SDKFIX
           path: |
             app/build/outputs/apk/debug/app-debug.apk
             build/verification/apk-sha256.txt
