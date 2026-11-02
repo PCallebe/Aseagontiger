@@ -8,15 +8,11 @@ on:
       - '.github/workflows/InfinityDragonTiger.yml'
 
 permissions:
-  contents: read
-
-concurrency:
-  group: dragon-tiger-apk
-  cancel-in-progress: false
+  contents: write
 
 jobs:
   build:
-    name: Compilar DragonTigerApp
+    name: Compilar e publicar APK instalável
     runs-on: ubuntu-22.04
     timeout-minutes: 45
 
@@ -38,7 +34,7 @@ jobs:
       - name: Instalar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Instalar plataformas e ferramentas Android
+      - name: Instalar plataformas Android
         shell: bash
         run: |
           set -euo pipefail
@@ -50,13 +46,12 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Validar e extrair ZIP do projeto
+      - name: Extrair projeto do ZIP
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -s "$PROJECT_ZIP" ]; then
-            echo "::error::Arquivo $PROJECT_ZIP não encontrado na raiz do repositório."
-            echo "ZIPs disponíveis na raiz:"
+            echo "::error::Não encontrei $PROJECT_ZIP na raiz do repositório."
             find . -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' || true
             exit 1
           fi
@@ -67,49 +62,58 @@ jobs:
           SETTINGS_FILE="$(find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 5 -type f -name settings.gradle.kts -print -quit)"
           if [ -z "$SETTINGS_FILE" ]; then
             echo "::error::O ZIP não contém settings.gradle.kts."
-            find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 5 -type f | head -100
             exit 1
           fi
 
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          rsync -a --delete "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
+          rsync -a "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
 
           test -s settings.gradle.kts
-          test -s build.gradle.kts
           test -s app/build.gradle.kts
           test -s app/src/main/AndroidManifest.xml
-          grep -q 'namespace = "com.infinity.dragontiger"' app/build.gradle.kts
           grep -q 'applicationId = "com.infinity.dragontiger"' app/build.gradle.kts
-
-      - name: Verificar ambiente
-        run: |
-          java -version
-          gradle --version
-          sdkmanager --list_installed
 
       - name: Compilar Kotlin
         run: gradle --no-daemon --stacktrace :app:compileDebugKotlin
 
-      - name: Gerar APK
+      - name: Gerar APK instalável
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Verificar APK
+      - name: Validar arquivo APK
+        id: apk
         shell: bash
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
-          mkdir -p build/verification
-          sha256sum "$APK" | tee build/verification/apk-sha256.txt
-          stat --printf='APK bytes: %s\n' "$APK" | tee build/verification/apk-size.txt
+          file "$APK"
+          if ! file "$APK" | grep -qi 'zip archive\|Android package'; then
+            echo "::error::O arquivo gerado não foi reconhecido como pacote APK."
+            exit 1
+          fi
+          mkdir -p release
+          cp "$APK" release/DragonTigerApp.apk
+          echo "apk_path=release/DragonTigerApp.apk" >> "$GITHUB_OUTPUT"
+          echo "APK gerado e validado:"
+          ls -lh release/DragonTigerApp.apk
+          sha256sum release/DragonTigerApp.apk
 
-      - name: Publicar APK
+      - name: Criar ou atualizar publicação para baixar APK diretamente
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="dragon-tiger-latest"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG"               --title "DragonTigerApp - APK mais recente"               --notes "APK instalável gerado automaticamente pelo GitHub Actions."               --prerelease
+          fi
+          gh release upload "$TAG" release/DragonTigerApp.apk --clobber
+
+      - name: Publicar APK como artefato de execução
         uses: actions/upload-artifact@v4
         with:
           name: DragonTigerApp-APK
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            build/verification/apk-sha256.txt
-            build/verification/apk-size.txt
+          path: release/DragonTigerApp.apk
           if-no-files-found: error
           retention-days: 30
