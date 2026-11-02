@@ -1,4 +1,4 @@
-name: DragonTigerApp - Gerar APK (ZIP na raiz)
+name: DragonTigerApp - Gerar APK
 
 on:
   workflow_dispatch:
@@ -10,18 +10,23 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: dragon-tiger-apk
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Extrair projeto e compilar APK
+    name: Compilar DragonTigerApp
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+
     env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
       PROJECT_ZIP: DragonTigerApp_v0.5.7_CORRIGIDO.zip
+      ANDROID_HOME: ${{ runner.temp }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
-      - name: Baixar arquivos do repositório
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -30,75 +35,68 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Instalar Gradle 8.9
+      - name: Instalar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar plataformas e ferramentas Android
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Localizar e extrair ZIP do projeto
+      - name: Validar e extrair ZIP do projeto
         shell: bash
         run: |
           set -euo pipefail
           if [ ! -s "$PROJECT_ZIP" ]; then
-            echo "ERRO: não encontrei $PROJECT_ZIP na raiz do repositório."
-            echo "Arquivos ZIP encontrados na raiz:"
+            echo "::error::Arquivo $PROJECT_ZIP não encontrado na raiz do repositório."
+            echo "ZIPs disponíveis na raiz:"
             find . -maxdepth 1 -type f -iname '*.zip' -printf '%f\n' || true
             exit 1
           fi
+
           mkdir -p "$RUNNER_TEMP/dragon-tiger-unpacked"
           unzip -q "$PROJECT_ZIP" -d "$RUNNER_TEMP/dragon-tiger-unpacked"
-          SETTINGS_FILE="$(find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 4 -type f -name settings.gradle.kts -print -quit)"
+
+          SETTINGS_FILE="$(find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 5 -type f -name settings.gradle.kts -print -quit)"
           if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERRO: o ZIP não contém settings.gradle.kts."
-            find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 4 -type f | head -80
+            echo "::error::O ZIP não contém settings.gradle.kts."
+            find "$RUNNER_TEMP/dragon-tiger-unpacked" -maxdepth 5 -type f | head -100
             exit 1
           fi
+
           PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
-          echo "Projeto localizado em: $PROJECT_DIR"
-          rsync -a --exclude='.github/' "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
-          test -s "$GITHUB_WORKSPACE/settings.gradle.kts"
-          echo "ZIP extraído automaticamente. Nenhuma extração manual é necessária."
+          rsync -a --delete "$PROJECT_DIR/" "$GITHUB_WORKSPACE/"
 
-      - name: Validar Android SDK pré-instalado
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          test -d "$ANDROID_HOME" || { echo "ERRO: Android SDK não encontrado no runner."; exit 1; }
-          test -d "$ANDROID_HOME/platforms/android-35" || {
-            echo "ERRO: Android SDK Platform 35 ausente no runner.";
-            ls -la "$ANDROID_HOME/platforms" || true;
-            exit 1;
-          }
-          test -d "$ANDROID_HOME/build-tools/35.0.0" || {
-            echo "ERRO: Android Build Tools 35.0.0 ausentes no runner.";
-            ls -la "$ANDROID_HOME/build-tools" || true;
-            exit 1;
-          }
-          echo "Android SDK 35 e Build Tools 35.0.0 encontrados."
-
-      - name: Validar estrutura e identidade do projeto
-        shell: bash
-        run: |
-          set -euo pipefail
           test -s settings.gradle.kts
           test -s build.gradle.kts
-          test -s gradle.properties
           test -s app/build.gradle.kts
           test -s app/src/main/AndroidManifest.xml
           grep -q 'namespace = "com.infinity.dragontiger"' app/build.gradle.kts
           grep -q 'applicationId = "com.infinity.dragontiger"' app/build.gradle.kts
-          echo "Estrutura do DragonTigerApp validada."
+
+      - name: Verificar ambiente
+        run: |
+          java -version
+          gradle --version
+          sdkmanager --list_installed
 
       - name: Compilar Kotlin
-        shell: bash
         run: gradle --no-daemon --stacktrace :app:compileDebugKotlin
 
-      - name: Gerar e verificar APK
+      - name: Gerar APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Verificar APK
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace :app:assembleDebug
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           mkdir -p build/verification
@@ -108,7 +106,7 @@ jobs:
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: DragonTigerApp-APK-v0.5.7
+          name: DragonTigerApp-APK
           path: |
             app/build/outputs/apk/debug/app-debug.apk
             build/verification/apk-sha256.txt
