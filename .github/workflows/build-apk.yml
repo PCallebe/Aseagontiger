@@ -15,6 +15,7 @@ jobs:
   build:
     name: Construir APK Debug
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Baixar repositório
@@ -27,23 +28,66 @@ jobs:
           java-version: '17'
 
       - name: Configurar Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
+        uses: android-actions/setup-android@v3
 
-      - name: Configurar Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Instalar componentes Android
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Preparar Gradle Wrapper
-        run: chmod +x ./gradlew
+      - name: Instalar Gradle 8.9
+        shell: bash
+        run: |
+          curl -fL \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o /tmp/gradle.zip
 
-      - name: Compilar APK Debug
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+          unzip -q /tmp/gradle.zip -d "$HOME/gradle"
+
+          echo "$HOME/gradle/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+      - name: Localizar projeto Android
+        shell: bash
+        run: |
+          PROJECT=$(find . -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path '*/.gradle/*' | head -n 1)
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERRO: settings.gradle não encontrado."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$(dirname "$PROJECT")" >> "$GITHUB_ENV"
+
+      - name: Compilar DesfonTiger
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+          gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Verificar APK
+        shell: bash
+        run: |
+          find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print
+
+          if ! find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            | grep -q .; then
+            echo "ERRO: APK não foi gerado."
+            exit 1
+          fi
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
-          name: DesfonTiger-Prototico-V0.1-Offline-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: DesfonTiger-PROTOTICO-V0.1-OFFLINE
+          path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
