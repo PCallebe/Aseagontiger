@@ -32,10 +32,13 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      - name: Instalar componentes Android
+      - name: Aceitar licenças e instalar componentes Android
         shell: bash
         run: |
-          yes | sdkmanager --licenses
+          set -e
+
+          printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | sdkmanager --licenses
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
@@ -93,4 +96,3 @@ jobs:
           path: '**/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
           retention-days: 30
-          
