@@ -1,18 +1,1 @@
-    - name: Configurar Android SDK sem pacote obsoleto
-      shell: bash
-      run: |
-        set -e
-        SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-        echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-        echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-        SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
-
-        if [ -z "$SDKMANAGER" ]; then
-          echo "ERRO: sdkmanager não encontrado."
-          exit 1
-        fi
-
-        yes | "$SDKMANAGER" --licenses >/dev/null || true
-
-        "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+https://github.com/PCallebe/Aseagontiger/blob/main/.github/workflows/android.yml
