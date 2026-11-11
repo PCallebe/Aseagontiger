@@ -1,0 +1,134 @@
+
+name: Construir DesfonTiger APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Construir APK Debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar componentes Android
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Instalar Gradle 8.9
+        shell: bash
+        run: |
+          curl -fL \
+            https://services.gradle.org/distributions/gradle-8.9-bin.zip \
+            -o "$RUNNER_TEMP/gradle.zip"
+
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
+
+          echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+      - name: Localizar projeto Android
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS=$(find . -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path '*/.gradle/*' \
+            | head -n 1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERRO: settings.gradle não encontrado."
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "ERRO: arquivo build.gradle não encontrado na raiz do projeto."
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERRO: módulo app não encontrado."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Projeto localizado: $PROJECT_DIR"
+
+      - name: Verificar estrutura do projeto
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          echo "Arquivos do projeto:"
+          ls -la
+
+          echo "Módulo app:"
+          ls -la app
+
+      - name: Compilar APK Debug
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            ./gradlew --no-daemon --stacktrace assembleDebug
+          else
+            gradle --no-daemon --stacktrace assembleDebug
+          fi
+
+      - name: Verificar APK gerado
+        shell: bash
+        run: |
+          set -e
+
+          APK=$(find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERRO: APK não foi encontrado."
+            exit 1
+          fi
+
+          echo "APK GERADO COM SUCESSO:"
+          ls -lh "$APK"
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesfonTiger-Prototico-V0.1-Offline-APK
+          path: '**/build/outputs/apk/debug/*.apk'
+          if-no-files-found: error
+          retention-days: 14
