@@ -1,3 +1,4 @@
+
 name: DesfonTiger - PROTÓTICO Android APK
 
 on:
@@ -12,6 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
     steps:
       - name: Baixar repositório
         uses: actions/checkout@v4
@@ -22,31 +24,125 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Android SDK (sem pacote obsoleto 'tools')
+      - name: Configurar Android SDK
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)
+
           if [ -z "$SDKMANAGER" ]; then
             echo "ERRO: sdkmanager não encontrado."
             exit 1
           fi
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" >/dev/null
 
-      - name: Configurar Gradle 8.9 (compatível com AGP 8.7.3)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Compilar APK Debug
+      - name: Localizar projeto Android
+        shell: bash
         run: |
-          cd DesfonTiger_PROTOTICO
-          gradle --no-daemon --stacktrace assembleDebug
+          set -euo pipefail
 
-      - name: Renomear APK
-        run: cp DesfonTiger_PROTOTICO/app/build/outputs/apk/debug/app-debug.apk DesfonTiger-debug.apk
+          PROJECT=""
+
+          WRAPPER=$(find . -type f -name gradlew \
+            -not -path '*/.gradle/*' \
+            -not -path '*/build/*' | sort | head -n 1)
+
+          if [ -n "$WRAPPER" ]; then
+            PROJECT=$(dirname "$WRAPPER")
+          else
+            SETTINGS=$(find . -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.gradle/*' \
+              -not -path '*/build/*' | sort | head -n 1)
+
+            if [ -n "$SETTINGS" ]; then
+              PROJECT=$(dirname "$SETTINGS")
+            fi
+          fi
+
+          if [ -z "$PROJECT" ]; then
+            ZIP=$(find . -maxdepth 3 -type f -iname '*.zip' | sort | head -n 1)
+
+            if [ -z "$ZIP" ]; then
+              echo "ERRO: gradlew, settings.gradle e ZIP não encontrados."
+              find . -maxdepth 3 -print | sort | head -n 250
+              exit 1
+            fi
+
+            echo "Extraindo: $ZIP"
+            mkdir -p projeto-extraido
+            unzip -q "$ZIP" -d projeto-extraido
+
+            WRAPPER=$(find projeto-extraido -type f -name gradlew \
+              -not -path '*/.gradle/*' \
+              -not -path '*/build/*' | sort | head -n 1)
+
+            if [ -n "$WRAPPER" ]; then
+              PROJECT=$(dirname "$WRAPPER")
+            else
+              SETTINGS=$(find projeto-extraido -type f \
+                \( -name settings.gradle -o -name settings.gradle.kts \) \
+                -not -path '*/.gradle/*' \
+                -not -path '*/build/*' | sort | head -n 1)
+
+              if [ -n "$SETTINGS" ]; then
+                PROJECT=$(dirname "$SETTINGS")
+              fi
+            fi
+          fi
+
+          if [ -z "$PROJECT" ]; then
+            echo "ERRO: projeto Android não localizado."
+            find . -maxdepth 5 -print | sort | head -n 300
+            exit 1
+          fi
+
+          PROJECT=$(cd "$PROJECT" && pwd)
+          echo "Projeto localizado: $PROJECT"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+
+      - name: Compilar APK Debug
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if [ -f ./gradlew ]; then
+            chmod +x ./gradlew
+            ./gradlew --no-daemon --stacktrace assembleDebug
+          else
+            gradle --no-daemon --stacktrace assembleDebug
+          fi
+
+      - name: Localizar e preparar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK=$(find "$PROJECT_DIR" -type f \
+            -path '*/build/outputs/apk/debug/*.apk' | sort | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERRO: APK debug não encontrado."
+            find "$PROJECT_DIR" -type f -path '*/build/outputs/*' -print
+            exit 1
+          fi
+
+          cp "$APK" DesfonTiger-debug.apk
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
