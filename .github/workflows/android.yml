@@ -1,34 +1,32 @@
-
-name: Construir DesfonTiger APK
+name: Android APK Build
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar repositório
+      - name: Checkout do repositório
         uses: actions/checkout@v4
 
       - name: Extrair projeto ZIP
         shell: bash
         run: |
           set -e
+          ZIP=$(find . -maxdepth 1 -type f -name "*.zip" | head -n 1)
 
-          ZIP_FILE="DesfonTiger_PROTOTICO_V0.1_OFFLINE.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERRO: arquivo ZIP não encontrado: $ZIP_FILE"
+          if [ -z "$ZIP" ]; then
+            echo "ERRO: arquivo ZIP não encontrado na raiz."
             exit 1
           fi
 
           mkdir -p projeto-extraido
-          unzip -o "$ZIP_FILE" -d projeto-extraido
+          unzip -q "$ZIP" -d projeto-extraido
 
       - name: Configurar Java 17
         uses: actions/setup-java@v4
@@ -37,89 +35,120 @@ jobs:
           java-version: '17'
 
       - name: Configurar Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
+        uses: android-actions/setup-android@v3
 
       - name: Instalar componentes Android
         shell: bash
         run: |
           set -e
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-          sdkmanager \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "platform-tools"
-
-      - name: Instalar Gradle 8.9
+      - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Localizar projeto Android
-        id: projeto
+      - name: Corrigir erros identificados no MainActivity
         shell: bash
         run: |
           set -e
 
-          ROOT="projeto-extraido"
+          FILE=$(find projeto-extraido -type f -name MainActivity.kt | head -n 1)
 
-          SETTINGS=$(find "$ROOT" -type f \
+          if [ -z "$FILE" ]; then
+            echo "ERRO: MainActivity.kt não encontrado."
+            exit 1
+          fi
+
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+
+          # Corrige quebra de linha gravada literalmente como \n.
+          broken = r"@OptIn(ExperimentalMaterial3Api::class)\n@Composable"
+          fixed = "@OptIn(ExperimentalMaterial3Api::class)\n@Composable"
+          source = source.replace(broken, fixed)
+
+          # Adiciona a função enter somente se ela ainda não existir.
+          marker = "    var refresh by remember { mutableIntStateOf(0) }"
+
+          if "fun enter(value: String)" not in source:
+              addition = marker + """
+              fun enter(value: String) {
+                  store.addOutcome(value)
+                  refresh++
+              }"""
+
+              if marker not in source:
+                  raise SystemExit(
+                      "ERRO: ponto de inserção da função enter não encontrado."
+                  )
+
+              source = source.replace(marker, addition, 1)
+
+          path.write_text(source, encoding="utf-8")
+          print("Correções aplicadas em:", path)
+          PY
+
+      - name: Localizar e configurar projeto Android
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS=$(find projeto-extraido -type f \
             \( -name settings.gradle -o -name settings.gradle.kts \) \
             -not -path '*/.gradle/*' | head -n 1)
 
-          if [ -z "$SETTINGS" ]; then
-            echo "ERRO: settings.gradle ou settings.gradle.kts não encontrado."
-            exit 1
-          fi
-
-          PROJECT=$(dirname "$SETTINGS")
-
-          if [ ! -f "$PROJECT/build.gradle" ] && \
-             [ ! -f "$PROJECT/build.gradle.kts" ]; then
-            echo "ERRO: build.gradle não encontrado."
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT/app/build.gradle" ] && \
-             [ ! -f "$PROJECT/app/build.gradle.kts" ]; then
-            echo "ERRO: módulo app não encontrado."
-            exit 1
-          fi
-
-          echo "dir=$PROJECT" >> "$GITHUB_OUTPUT"
-          echo "Projeto localizado: $PROJECT"
-
-      - name: Preparar Gradle
-        shell: bash
-        working-directory: ${{ steps.projeto.outputs.dir }}
-        run: |
-          set -e
-
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-          fi
-
-      - name: Compilar APK
-        shell: bash
-        working-directory: ${{ steps.projeto.outputs.dir }}
-        run: |
-          set -e
-
-          if [ -f "./gradlew" ]; then
-            ./gradlew --no-daemon clean assembleDebug
+          if [ -n "$SETTINGS" ]; then
+            PROJECT=$(dirname "$SETTINGS")
           else
-            gradle --no-daemon clean assembleDebug
+            APP_BUILD=$(find projeto-extraido -type f \
+              \( -name build.gradle -o -name build.gradle.kts \) \
+              -path '*/app/*' | head -n 1)
+
+            if [ -z "$APP_BUILD" ]; then
+              echo "ERRO: projeto Android não localizado."
+              exit 1
+            fi
+
+            PROJECT=$(dirname "$(dirname "$APP_BUILD")")
           fi
+
+          echo "Projeto localizado em: $PROJECT"
+          echo "$PROJECT" > projeto_android_path.txt
+
+      - name: Preparar Gradle Wrapper
+        shell: bash
+        run: |
+          set -e
+          PROJECT=$(cat projeto_android_path.txt)
+          cd "$PROJECT"
+
+          if [ ! -f gradlew ]; then
+            echo "ERRO: gradlew não encontrado no projeto."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+      - name: Compilar APK Debug
+        shell: bash
+        run: |
+          set -e
+          PROJECT=$(cat projeto_android_path.txt)
+          cd "$PROJECT"
+
+          ./gradlew assembleDebug --stacktrace
 
       - name: Localizar APK gerado
-        id: apk
         shell: bash
-        working-directory: ${{ steps.projeto.outputs.dir }}
         run: |
           set -e
 
-          APK=$(find . -type f \
+          APK=$(find projeto-extraido -type f \
             -path '*/build/outputs/apk/debug/*.apk' | head -n 1)
 
           if [ -z "$APK" ]; then
@@ -127,13 +156,12 @@ jobs:
             exit 1
           fi
 
-          echo "arquivo=$APK" >> "$GITHUB_OUTPUT"
-          echo "APK encontrado: $APK"
+          mkdir -p apk-final
+          cp "$APK" apk-final/DesfonTiger-debug.apk
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: DesfonTiger-APK
-          path: ${{ steps.projeto.outputs.dir }}/${{ steps.apk.outputs.arquivo }}
+          path: apk-final/DesfonTiger-debug.apk
           if-no-files-found: error
-          retention-days: 7
